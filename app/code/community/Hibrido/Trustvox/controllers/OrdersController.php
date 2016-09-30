@@ -2,6 +2,8 @@
 
 class Hibrido_Trustvox_OrdersController extends Mage_Core_Controller_Front_Action {
 
+    private $json;
+
     private function helper()
     {
         return Mage::helper('hibridotrustvox');
@@ -31,79 +33,14 @@ class Hibrido_Trustvox_OrdersController extends Mage_Core_Controller_Front_Actio
 
             $orders = $this->helper()->getOrdersByLastDays($period);
 
-            $json = array();
+            $this->json = array();
 
-            $i = -1;
-            foreach ($orders as $order) {
-                ++$i;
-                $clientArray = $this->helper()->mountClientInfoToSend($order->getCustomerFirstname(), $order->getCustomerLastname(), $order->getCustomerEmail());
+            Mage::getSingleton('core/resource_iterator')->walk(
+                $orders->getSelect(),
+                array(array($this, 'processOrderInfo'))
+            );
 
-                $enabled = $this->helper()->checkStoreIdEnabled();
-                $productArray = array();
-
-
-                foreach ($order->getAllItems() as $item) {
-                    $_product = Mage::getModel('catalog/product');
-
-                    if ($item->getProductType() == 'simple') {
-                        $parents = Mage::getResourceSingleton('catalog/product_type_configurable')->getParentIdsByChild($item->getProductId());
-                        if(count($parents) >= 1){
-                            $productId = $parents[0];
-                        }else{
-                            $productId = $item->getProductId();
-                        }
-                    }else if($item->getProductType() == 'grouped'){
-                        $parents = Mage::getModel('catalog/product_type_grouped')->getParentIdsByChild($item->getProductId());
-                        if(count($parents) >= 1){
-                            $productId = $parents[0];
-                        }else{
-                            $productId = $item->getProductId();
-                        }
-                    }else{
-                        $productId = $item->getProductId();
-                    }
-
-                    if ($item->getParentItemId()) {
-                        $parent_product_type = Mage::getModel('sales/order_item')->load($item->getParentItemId())->getProductType();
-                        if ($parent_product_type == Mage_Catalog_Model_Product_Type::TYPE_BUNDLE) {
-                            $productId = $item->getParentItemId();
-                        }
-                    }
-
-                    $_item = $_product->load($productId);
-                    $product_url = $_item->getProductUrl();
-
-                    $images = array();
-
-                    foreach ($_item->getMediaGalleryImages() as $image) {
-                        array_push($images, $image->getUrl());
-                    }
-
-                    if($_item->getId()){
-                        $productArray[$_item->getId()] = array(
-                            'name' => $_item->getName(),
-                            'id' => $_item->getId(),
-                            'price' => $_item->getPrice(),
-                            'url' => $product_url,
-                            'type' => $item->getProductType(),
-                            'photos_urls' => is_null($images[0]) ? '' : array($images[0]),
-                        );
-                    }
-                }
-
-            $shippingDate = '';
-            foreach($order->getShipmentsCollection() as $shipment){
-                $shippingDate = $shipment->getCreatedAt();
-            }
-
-            if(!$shippingDate || $shippingDate == ''){
-                $shippingDate = $order->getCreatedAt();
-            }
-
-            array_push($json, $this->helper()->forJSON($order->getId(), $shippingDate, $clientArray, $productArray));
-            }
-
-            return $this->getResponse()->setBody(json_encode($json));
+            return $this->getResponse()->setBody(json_encode($this->json));
         } else {
             $jsonArray = array(
                 'error' => true,
@@ -112,4 +49,74 @@ class Hibrido_Trustvox_OrdersController extends Mage_Core_Controller_Front_Actio
             $this->getResponse()->setBody(json_encode($jsonArray));
         }
     }
+
+    public function processOrderInfo($iterargs)
+    {
+        $product_resource = Mage::getResourceSingleton('catalog/product');
+
+        $clientArray = $this->helper()->mountClientInfoToSend($iterargs['row']['customer_firstname'], $iterargs['row']['customer_lastname'], $iterargs['row']['customer_email']);
+
+        $enabled = $this->helper()->checkStoreIdEnabled();
+        $productArray = array();
+
+        $items = Mage::getResourceModel('sales/order_item_collection')->setOrderFilter($iterargs['row']['entity_id']);
+
+        foreach ($items as $item) {
+            $_product = Mage::getModel('catalog/product');
+
+            if ($item->getProductType() == 'simple') {
+                $parents = Mage::getResourceSingleton('catalog/product_type_configurable')->getParentIdsByChild($item->getProductId());
+                if(count($parents) >= 1){
+                    $productId = $parents[0];
+                }else{
+                    $productId = $item->getProductId();
+                }
+            }else if($item->getProductType() == 'grouped'){
+                $parents = Mage::getModel('catalog/product_type_grouped')->getParentIdsByChild($item->getProductId());
+                if(count($parents) >= 1){
+                    $productId = $parents[0];
+                }else{
+                    $productId = $item->getProductId();
+                }
+            }else{
+                $productId = $item->getProductId();
+            }
+
+            if ($item->getParentItemId()) {
+                $parent_product_type = Mage::getModel('sales/order_item')->load($item->getParentItemId())->getProductType();
+                if ($parent_product_type == Mage_Catalog_Model_Product_Type::TYPE_BUNDLE) {
+                    $productId = $item->getParentItemId();
+                }
+            }
+
+            $image = $product_resource->getAttributeRawValue($productId, 'image', Mage::app()->getStore());
+            $product_url = Mage::getUrl() . $product_resource->getAttributeRawValue($productId, 'url_path', Mage::app()->getStore());
+
+            if($item->getId()){
+                $productArray[$item->getId()] = array(
+                    'name' => $item->getName(),
+                    'id' => $item->getId(),
+                    'price' => $item->getPrice(),
+                    'url' => $product_url,
+                    'type' => $item->getProductType(),
+                    'photos_urls' => array(Mage::getModel('catalog/product_media_config')->getMediaUrl($image)),
+                );
+            }
+        }
+
+        $shippingDate = '';
+        $shipments = Mage::getResourceModel('sales/order_shipment_collection')->setOrderFilter($iterargs['row']['entity_id']);
+
+        foreach($shipments as $shipment){
+            $shippingDate = $shipment->getCreatedAt();
+        }
+
+        if(!$shippingDate || $shippingDate == ''){
+            $shippingDate = $iterargs['row']['created_at'];
+        }
+
+        array_push($this->json, $this->helper()->forJSON($iterargs['row']['entity_id'], $shippingDate, $clientArray, $productArray));
+
+    }
+
 }
